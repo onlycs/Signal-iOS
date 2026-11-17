@@ -87,6 +87,11 @@ public enum RingrtcH265Config {
         }
         defer { VTCompressionSessionInvalidate(session) }
 
+        guard #available(iOS 17.4, *) else {
+            // iOS devices only have hardware H.265 encoders, and older
+            // versions can't report how a session encodes.
+            return true
+        }
         var usingHardware: CFBoolean?
         let propertyStatus = withUnsafeMutablePointer(to: &usingHardware) {
             VTSessionCopyProperty(
