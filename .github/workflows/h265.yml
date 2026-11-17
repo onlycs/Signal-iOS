@@ -1,0 +1,373 @@
+name: H.265 fork build
+run-name: H.265 fork build (webrtc@${{ inputs.webrtc_ref || 'ios-h265-videotoolbox' }}, ringrtc@${{ inputs.ringrtc_ref || 'ios-h265' }})
+
+# Builds the whole H.265 stack from the forks, on free GitHub-hosted runners:
+#
+#   onlycs/webrtc  ──► WebRTC.xcframework ─┐
+#   onlycs/ringrtc ──► LibRingRTCFfi.xcframework ─┴─► Signal (tests + unsigned .ipa)
+#
+# Signal is pointed at the local RingRTC checkout and the locally built
+# xcframeworks the same way Scripts/local-ringrtc.py does it, so nothing has to
+# be published or checksummed. WebRTC.xcframework is cached by WebRTC commit,
+# so only changes to the WebRTC fork pay for the (multi-hour) WebRTC build.
+
+on:
+  push:
+    branches:
+      - h265-ci
+  workflow_dispatch:
+    inputs:
+      webrtc_ref:
+        description: "onlycs/webrtc branch or commit"
+        default: ios-h265-videotoolbox
+        type: string
+      ringrtc_ref:
+        description: "onlycs/ringrtc branch or commit"
+        default: ios-h265
+        type: string
+      run_tests:
+        description: "Run RingRTC and Signal unit tests"
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WEBRTC_REPO: onlycs/webrtc
+  RINGRTC_REPO: onlycs/ringrtc
+  DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve:
+    name: Resolve commits
+    runs-on: ubuntu-latest
+    outputs:
+      webrtc_sha: ${{ steps.resolve.outputs.webrtc_sha }}
+      ringrtc_sha: ${{ steps.resolve.outputs.ringrtc_sha }}
+    steps:
+      - id: resolve
+        env:
+          WEBRTC_REF: ${{ inputs.webrtc_ref || 'ios-h265-videotoolbox' }}
+          RINGRTC_REF: ${{ inputs.ringrtc_ref || 'ios-h265' }}
+        run: |
+          resolve() {
+            sha=$(git ls-remote "https://github.com/$1" "refs/heads/$2" | cut -f1)
+            echo "${sha:-$2}"
+          }
+          webrtc_sha=$(resolve "$WEBRTC_REPO" "$WEBRTC_REF")
+          ringrtc_sha=$(resolve "$RINGRTC_REPO" "$RINGRTC_REF")
+          echo "webrtc_sha=$webrtc_sha" >> "$GITHUB_OUTPUT"
+          echo "ringrtc_sha=$ringrtc_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "| repo | ref | commit |"
+            echo "| --- | --- | --- |"
+            echo "| $WEBRTC_REPO | $WEBRTC_REF | $webrtc_sha |"
+            echo "| $RINGRTC_REPO | $RINGRTC_REF | $ringrtc_sha |"
+            echo "| $GITHUB_REPOSITORY | $GITHUB_REF_NAME | $GITHUB_SHA |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  webrtc:
+    name: Build WebRTC.xcframework
+    needs: resolve
+    runs-on: xcode-27
+    timeout-minutes: 360
+    env:
+      WEBRTC_SHA: ${{ needs.resolve.outputs.webrtc_sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RINGRTC_REPO }}
+          ref: ${{ needs.resolve.outputs.ringrtc_sha }}
+
+      - name: Restore cached WebRTC.xcframework
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/release/WebRTC.xcframework
+          # Only arm64 slices (device + Apple silicon simulator) are built.
+          key: webrtc-ios-arm64-${{ env.WEBRTC_SHA }}-${{ hashFiles('bin/build-ios', 'config/webrtc.gclient.*') }}
+
+      - name: Free disk space
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          df -h /
+          for xcode in /Applications/Xcode_*.app; do
+            case "$(cd "$xcode" && pwd -P)" in
+              /Applications/Xcode_27.1.app) ;;
+              *) sudo rm -rf "$xcode" ;;
+            esac
+          done
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/node_modules ~/.ghcup || true
+          df -h /
+
+      - name: Install dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install coreutils
+          # pkg_resources is needed by the WebRTC build on macOS hosts.
+          python3 -m pip install --break-system-packages setuptools || python3 -m pip install setuptools
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git out/depot_tools
+          echo "$PWD/out/depot_tools" >> "$GITHUB_PATH"
+          sudo mkdir -p /usr/local/lib
+
+      - name: Point RingRTC at the WebRTC fork
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          perl -pi -e 's#https://github.com/signalapp/webrtc.git#https://github.com/$ENV{WEBRTC_REPO}.git#' config/webrtc.gclient.common
+          perl -pi -e 's#src\@\$\{WEBRTC_VERSION\}#src\@$ENV{WEBRTC_SHA}#' bin/gsync-webrtc
+          # Skip the x86_64 simulator slice; nothing here runs on Intel.
+          perl -pi -e 's#ARCHS=\("simulator:x64" #ARCHS=(#' bin/build-ios
+          git diff
+
+      - name: Sync WebRTC
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          bin/prepare-workspace ios
+          git -C src/webrtc/src log -1 --format='%H %s'
+          test "$(git -C src/webrtc/src rev-parse HEAD)" = "$WEBRTC_SHA"
+          df -h /
+
+      - name: Build WebRTC
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          bin/build-ios --webrtc-only --release
+          df -h /
+
+      - name: Check H.265 support was built
+        run: |
+          plutil -p out/release/WebRTC.xcframework/Info.plist
+          ls out/release/WebRTC.xcframework/*/WebRTC.framework/Headers | grep H265
+          for bin in out/release/WebRTC.xcframework/*/WebRTC.framework/WebRTC; do
+            nm -gU "$bin" | grep -q 'OBJC_CLASS_\$_RTCVideoEncoderH265' || { echo "::error::$bin is missing RTCVideoEncoderH265"; exit 1; }
+            nm -gU "$bin" | grep -q 'OBJC_CLASS_\$_RTCVideoDecoderH265' || { echo "::error::$bin is missing RTCVideoDecoderH265"; exit 1; }
+          done
+
+      - name: Archive
+        run: ditto -c -k --norsrc --noextattr --noacl --noqtn --keepParent out/release/WebRTC.xcframework WebRTC.xcframework.zip
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: webrtc-ios
+          path: WebRTC.xcframework.zip
+          compression-level: 0
+          retention-days: 14
+
+  ringrtc:
+    name: Build LibRingRTCFfi.xcframework
+    needs: resolve
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RINGRTC_REPO }}
+          ref: ${{ needs.resolve.outputs.ringrtc_sha }}
+
+      - run: brew install protobuf coreutils
+      - run: rustup toolchain install $(cat rust-toolchain) --profile minimal --target x86_64-apple-ios,aarch64-apple-ios,aarch64-apple-ios-sim --component rust-src
+      - run: cargo install --locked --version $(cat config/cbindgen-version) cbindgen
+
+      - name: Check FFI version marker
+        run: bin/check-ffi-version
+
+      - name: Build
+        run: bin/build-ios --ringrtc-only --release
+
+      - name: Check FFI header is up to date
+        run: |
+          git diff --exit-code src/ios/SignalRingRTC/RingRTCFfi/ringrtc.h || {
+            echo "::error file=src/ios/SignalRingRTC/RingRTCFfi/ringrtc.h::Out of date. Run bin/generate-ffi-header."
+            exit 1
+          }
+
+      - name: Archive
+        run: ditto -c -k --norsrc --noextattr --noacl --noqtn --keepParent out/release/LibRingRTCFfi.xcframework LibRingRTCFfi.xcframework.zip
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ringrtc-ffi-ios
+          path: LibRingRTCFfi.xcframework.zip
+          compression-level: 0
+          retention-days: 14
+
+  ringrtc_tests:
+    name: RingRTC iOS tests
+    needs: [resolve, webrtc]
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RINGRTC_REPO }}
+          ref: ${{ needs.resolve.outputs.ringrtc_sha }}
+
+      - run: brew install protobuf coreutils
+      - run: rustup toolchain install $(cat rust-toolchain) --profile minimal --target aarch64-apple-ios-sim --component rust-src
+      - run: cargo install --locked --version $(cat config/cbindgen-version) cbindgen
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: webrtc-ios
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Unpack WebRTC.xcframework
+        run: |
+          mkdir -p out/release
+          ditto -x -k "$RUNNER_TEMP/artifacts/WebRTC.xcframework.zip" out/release
+
+      - name: Test
+        env:
+          RINGRTC_WEBRTC_XCFRAMEWORK: out/release/WebRTC.xcframework
+          TEST_RUNNER_RINGRTC_MAX_LOG_LEVEL: 2 # warnings only
+        run: bin/run-ios-tests
+
+  signal_test:
+    name: Signal build and test
+    needs: [resolve, webrtc, ringrtc]
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+    runs-on: xcode-27
+    timeout-minutes: 240
+    env:
+      FASTLANE_XCODEBUILD_SETTINGS_RETRIES: 7
+      # Both are relative to their package's root, like Scripts/local-ringrtc.py.
+      RINGRTC_WEBRTC_XCFRAMEWORK: out/release/WebRTC.xcframework
+      SIGNAL_RINGRTC_FFI_XCFRAMEWORK: ../ringrtc/out/release/LibRingRTCFfi.xcframework
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RINGRTC_REPO }}
+          ref: ${{ needs.resolve.outputs.ringrtc_sha }}
+          path: ringrtc
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: '{webrtc-ios,ringrtc-ffi-ios}'
+          merge-multiple: true
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Use local RingRTC
+        run: |
+          mkdir -p ringrtc/out/release
+          ditto -x -k "$RUNNER_TEMP/artifacts/WebRTC.xcframework.zip" ringrtc/out/release
+          ditto -x -k "$RUNNER_TEMP/artifacts/LibRingRTCFfi.xcframework.zip" ringrtc/out/release
+          # Same workspace Scripts/local-ringrtc.py creates.
+          cp -R Signal.xcworkspace Signal-LocalRingRTC.xcworkspace
+          perl -0pi -e 's#</Workspace>#   <FileRef\n      location = "group:ringrtc">\n   </FileRef>\n</Workspace>#' Signal-LocalRingRTC.xcworkspace/contents.xcworkspacedata
+          cat Signal-LocalRingRTC.xcworkspace/contents.xcworkspacedata
+
+      - name: Check Xcode version
+        run: Scripts/check_xcode_version.py --relaxed
+
+      - name: Download Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Download iOS runtime
+        run: xcodebuild -downloadPlatform iOS
+
+      - name: Build and Test
+        run: |
+          # The local RingRTC package changes package resolution, so let Xcode resolve.
+          sed -e 's/-workspace Signal.xcworkspace/-workspace Signal-LocalRingRTC.xcworkspace/' \
+              -e '/-disableAutomaticPackageResolution/d' \
+              Scripts/build-and-test.sh > "$RUNNER_TEMP/build-and-test.sh"
+          zsh "$RUNNER_TEMP/build-and-test.sh"
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: signal-test-logs
+          path: ~/Library/Logs/Signal-CI
+
+  signal_ipa:
+    name: Signal unsigned .ipa
+    needs: [resolve, webrtc, ringrtc]
+    runs-on: xcode-27
+    timeout-minutes: 240
+    env:
+      RINGRTC_WEBRTC_XCFRAMEWORK: out/release/WebRTC.xcframework
+      SIGNAL_RINGRTC_FFI_XCFRAMEWORK: ../ringrtc/out/release/LibRingRTCFfi.xcframework
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RINGRTC_REPO }}
+          ref: ${{ needs.resolve.outputs.ringrtc_sha }}
+          path: ringrtc
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: '{webrtc-ios,ringrtc-ffi-ios}'
+          merge-multiple: true
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Use local RingRTC
+        run: |
+          mkdir -p ringrtc/out/release
+          ditto -x -k "$RUNNER_TEMP/artifacts/WebRTC.xcframework.zip" ringrtc/out/release
+          ditto -x -k "$RUNNER_TEMP/artifacts/LibRingRTCFfi.xcframework.zip" ringrtc/out/release
+          cp -R Signal.xcworkspace Signal-LocalRingRTC.xcworkspace
+          perl -0pi -e 's#</Workspace>#   <FileRef\n      location = "group:ringrtc">\n   </FileRef>\n</Workspace>#' Signal-LocalRingRTC.xcworkspace/contents.xcworkspacedata
+
+      - name: Download Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/logs"
+          NSUnbufferedIO=YES xcodebuild \
+            -workspace Signal-LocalRingRTC.xcworkspace \
+            -scheme Signal \
+            -configuration "App Store Release" \
+            -destination generic/platform=iOS \
+            -archivePath "$RUNNER_TEMP/Signal.xcarchive" \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            2>&1 \
+          | tee "$RUNNER_TEMP/logs/archive.log" \
+          | xcbeautify --renderer github-actions --disable-logging
+
+      - name: Package .ipa
+        env:
+          WEBRTC_SHA: ${{ needs.resolve.outputs.webrtc_sha }}
+          RINGRTC_SHA: ${{ needs.resolve.outputs.ringrtc_sha }}
+        run: |
+          app="$RUNNER_TEMP/Signal.xcarchive/Products/Applications/Signal.app"
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          nm -gU "$app/Frameworks/WebRTC.framework/WebRTC" | grep -q 'OBJC_CLASS_\$_RTCVideoEncoderH265' || {
+            echo "::error::Signal.app's WebRTC.framework is missing RTCVideoEncoderH265"
+            exit 1
+          }
+          name="Signal-${version}-h265-${GITHUB_SHA:0:8}-ringrtc-${RINGRTC_SHA:0:8}-webrtc-${WEBRTC_SHA:0:8}-unsigned.ipa"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/$name" Payload)
+          ls -lh "$name"
+          echo "IPA_NAME=$name" >> "$GITHUB_ENV"
+          echo "Built \`$name\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: signal-ipa
+          path: ${{ env.IPA_NAME }}
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: signal-ipa-logs
+          path: ${{ runner.temp }}/logs
