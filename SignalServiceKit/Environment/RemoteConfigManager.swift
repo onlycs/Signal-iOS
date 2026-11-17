@@ -433,6 +433,34 @@ public class RemoteConfig {
         return !isEnabled(.ringrtcNwPathMonitorTrialKillSwitch, defaultValue: false)
     }
 
+    public var ringrtcH265Enabled: Bool {
+        return isEnabled(.ringrtcH265Enabled, defaultValue: false)
+    }
+
+    /// List of "device models" hardware identifiers deny-listed for which
+    /// RingRTC should avoid encoding H.265.
+    ///
+    /// Compare entries to the value of `String(sysctlKey: "hw.machine")`.
+    public var ringrtcH265DeviceModelEncodeDenylist: [String] {
+        guard let valueFlag = valueFlags[ValueFlag.ringrtcH265DeviceModelEncodeDenylist.rawValue] else {
+            return []
+        }
+
+        return valueFlag.split(separator: ".").map { String($0) }
+    }
+
+    /// List of "device models" hardware identifiers deny-listed for which
+    /// RingRTC should avoid decoding H.265.
+    ///
+    /// Compare entries to the value of `String(sysctlKey: "hw.machine")`.
+    public var ringrtcH265DeviceModelDecodeDenylist: [String] {
+        guard let valueFlag = valueFlags[ValueFlag.ringrtcH265DeviceModelDecodeDenylist.rawValue] else {
+            return []
+        }
+
+        return valueFlag.split(separator: ".").map { String($0) }
+    }
+
     public var ringrtcVp9Enabled: Bool {
         return isEnabled(.ringrtcVp9Enabled, defaultValue: false)
     }
@@ -733,6 +761,7 @@ private enum IsEnabledFlag: String, FlagType {
     case paypalGiftDonationKillSwitch = "ios.paypalGiftDonationKillSwitch"
     case paypalMonthlyDonationKillSwitch = "ios.paypalMonthlyDonationKillSwitch"
     case paypalOneTimeDonationKillSwitch = "ios.paypalOneTimeDonationKillSwitch"
+    case ringrtcH265Enabled = "ios.ringrtcH265Enabled"
     case ringrtcNwPathMonitorTrialKillSwitch = "ios.ringrtcNwPathMonitorTrialKillSwitch"
     case ringrtcSvcEnabled = "ios.ringrtcSvcEnabled"
     case ringrtcVp9Enabled = "ios.ringrtcVp9Enabled.2"
@@ -762,6 +791,7 @@ private enum IsEnabledFlag: String, FlagType {
         case .paypalGiftDonationKillSwitch: false
         case .paypalMonthlyDonationKillSwitch: false
         case .paypalOneTimeDonationKillSwitch: false
+        case .ringrtcH265Enabled: true
         case .ringrtcNwPathMonitorTrialKillSwitch: true // cached during launch, so not hot-swapped in practice
         case .ringrtcSvcEnabled: false
         case .ringrtcVp9Enabled: true
@@ -811,6 +841,8 @@ private enum ValueFlag: String, FlagType {
     case reactiveProfileKeyAttemptInterval = "ios.reactiveProfileKeyAttemptInterval"
     case replaceableInteractionExpiration = "ios.replaceableInteractionExpiration"
     case ringrtcDredDuration = "ios.ringrtcDredDuration"
+    case ringrtcH265DeviceModelDecodeDenylist = "ios.ringrtcH265DeviceModelDecodeDenylist"
+    case ringrtcH265DeviceModelEncodeDenylist = "ios.ringrtcH265DeviceModelEncodeDenylist"
     case ringrtcSvcMaxBitrateBps = "ios.ringrtcSvcMaxBitrateBps"
     case ringrtcSvcMode = "ios.ringrtcSvcMode"
     case ringrtcSvcModeForScreenshare = "ios.ringrtcSvcModeForScreenshare"
@@ -862,6 +894,8 @@ private enum ValueFlag: String, FlagType {
         case .reactiveProfileKeyAttemptInterval: true
         case .replaceableInteractionExpiration: false
         case .ringrtcDredDuration: true
+        case .ringrtcH265DeviceModelDecodeDenylist: true
+        case .ringrtcH265DeviceModelEncodeDenylist: true
         case .ringrtcSvcMaxBitrateBps: true
         case .ringrtcSvcMode: true
         case .ringrtcSvcModeForScreenshare: true

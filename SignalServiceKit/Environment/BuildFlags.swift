@@ -213,6 +213,18 @@ public enum DebugFlags {
         details: LocalizationNotNeeded("Calls will offer VP9 decode (overrides remote config)."),
     )
 
+    public static let callingEnableH265Encode = TestableFlag<Bool>(
+        false,
+        title: LocalizationNotNeeded("Enable H.265 Encode"),
+        details: LocalizationNotNeeded("1:1 calls will offer H.265 encode if the device has a hardware encoder (overrides remote config)."),
+    )
+
+    public static let callingEnableH265Decode = TestableFlag<Bool>(
+        false,
+        title: LocalizationNotNeeded("Enable H.265 Decode"),
+        details: LocalizationNotNeeded("1:1 calls will offer H.265 decode if the device has a hardware decoder (overrides remote config)."),
+    )
+
     public static let callingEnableSvc = TestableFlag(
         false,
         title: LocalizationNotNeeded("Enable SVC"),
@@ -226,6 +238,8 @@ public enum DebugFlags {
         callingOverrideCodecs,
         callingEnableVp9Encode,
         callingEnableVp9Decode,
+        callingEnableH265Encode,
+        callingEnableH265Decode,
         callingEnableSvc,
         callingSvcMaxBitrateBps,
     ]

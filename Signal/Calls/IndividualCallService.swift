@@ -458,6 +458,8 @@ final class IndividualCallService: CallServiceStateObserver {
                     audioLevelsIntervalMillis: nil,
                     enableVp9Encode: RingrtcVp9Config.enableVp9Encode(with: remoteConfigCurrent),
                     enableVp9Decode: RingrtcVp9Config.enableVp9Decode(with: remoteConfigCurrent),
+                    enableH265Encode: RingrtcH265Config.enableH265Encode(with: remoteConfigCurrent),
+                    enableH265Decode: RingrtcH265Config.enableH265Decode(with: remoteConfigCurrent),
                     dredDuration: remoteConfigCurrent.ringrtcDredDuration,
                     statsIntervalSecs: statsIntervalSecs > 0 ? UInt16(exactly: statsIntervalSecs) : nil,
                 )
