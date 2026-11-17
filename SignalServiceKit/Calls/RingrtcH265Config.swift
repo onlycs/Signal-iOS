@@ -63,9 +63,25 @@ public enum RingrtcH265Config {
 
     /// Whether VideoToolbox can encode H.265 in hardware on this device.
     ///
-    /// There's no direct query for this, so check by creating (and discarding)
-    /// a compression session.
-    private static let hasHardwareEncoder: Bool = {
+    /// Only success is cached: probing can fail transiently (e.g. while the
+    /// app is in the background for an incoming call), and that mustn't stop
+    /// H.265 from being offered for the rest of the process.
+    private static var hasHardwareEncoder: Bool {
+        if hasHardwareEncoderCache.get() {
+            return true
+        }
+        guard probeHardwareEncoder() else {
+            return false
+        }
+        hasHardwareEncoderCache.set(true)
+        return true
+    }
+
+    private static let hasHardwareEncoderCache = AtomicBool(false, lock: .init())
+
+    /// There's no direct query for hardware H.265 encoding, so check by
+    /// creating (and discarding) a compression session.
+    private static func probeHardwareEncoder() -> Bool {
 #if targetEnvironment(simulator)
         return false
 #else
@@ -108,5 +124,5 @@ public enum RingrtcH265Config {
         }
         return CFBooleanGetValue(usingHardware)
 #endif
-    }()
+    }
 }
