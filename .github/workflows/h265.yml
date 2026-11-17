@@ -135,6 +135,9 @@ jobs:
       - name: Build WebRTC
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
+          # Keep going after errors so one run reports all of them.
+          perl -pi -e "s/^(\s*)'ninja',\$/\$1'ninja', '-k', '0',/" src/webrtc/src/tools_webrtc/ios/build_ios_libs.py
+          grep -n "'ninja'" src/webrtc/src/tools_webrtc/ios/build_ios_libs.py
           bin/build-ios --webrtc-only --release
           df -h /
 
