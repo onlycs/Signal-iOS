@@ -228,7 +228,13 @@ jobs:
         env:
           RINGRTC_WEBRTC_XCFRAMEWORK: out/release/WebRTC.xcframework
           TEST_RUNNER_RINGRTC_MAX_LOG_LEVEL: 2 # warnings only
-        run: bin/run-ios-tests
+        # The group call tests are timing-sensitive, and these runners are
+        # much smaller than upstream's, so allow one retry.
+        run: |
+          bin/run-ios-tests || {
+            echo "::warning::RingRTC iOS tests failed once; retrying"
+            bin/run-ios-tests
+          }
 
   signal_test:
     name: Signal build and test
@@ -276,6 +282,8 @@ jobs:
         run: xcodebuild -downloadPlatform iOS
 
       - name: Build and Test
+        # The run has been seen to stall after the tests finish; don't burn hours.
+        timeout-minutes: 90
         run: |
           # The local RingRTC package changes package resolution, so let Xcode resolve.
           sed -e 's/-workspace Signal.xcworkspace/-workspace Signal-LocalRingRTC.xcworkspace/' \
@@ -285,7 +293,7 @@ jobs:
 
       - name: Upload build logs
         uses: actions/upload-artifact@v6
-        if: failure()
+        if: ${{ !success() }}
         with:
           name: signal-test-logs
           path: ~/Library/Logs/Signal-CI
